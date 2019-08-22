@@ -93,4 +93,4 @@ def random_excuse():
     excuse = random.choice(EXCUSE_LIST)
     noun = random.choice(EXCUSE_NOUN)
 
-    return f"I would {noun} to but {excuse}"
+    return f"I would {noun} to but... {excuse}"
