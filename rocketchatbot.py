@@ -6,13 +6,17 @@ import uuid
 import json
 import copy
 import os
+import re
 import time
 import websockets
 import queue
 import shlex
 import aiohttp
-from typing import Optional, List, Coroutine, NamedTuple
+import dataclasses
+from typing import Optional, List, NamedTuple
 from typing import Callable
+from typing import Union
+from typing import Pattern
 from rocketchat_data import Message
 from args import ArgumentParser
 from args import arg
@@ -31,8 +35,24 @@ class _Command(NamedTuple):
 
     coro: Callable
     help: str
-    args: Optional[List[arg]] = None
-    rooms: Optional[List[str]] = None
+    args: Optional[List[arg]]
+    rooms: Optional[List[str]]
+
+
+@dataclasses.dataclass
+class _Match:
+    """
+    Match object.
+
+    Args:
+        coro: Coroutine callable for the match.
+        rate_limit: Rate limit for the match.
+    """
+
+    coro: Callable
+    pattern: Pattern
+    rate_limit: Optional[int]
+    last_called: Optional[int] = None
 
 
 class RocketChatBot:
@@ -73,6 +93,7 @@ class RocketChatBot:
         self._completion_event = {}
         self._completion = {}
         self._commands = {}
+        self._match = []
 
     def run(
         self,
@@ -187,6 +208,36 @@ class RocketChatBot:
 
         return parser
 
+    def validate_args(self, coro: Callable):
+        """
+        Validates the arguments of a decorated function.
+
+        Args:
+            coro: Coroutine function to check
+
+        Raises:
+            ValueError:
+                Decorated function is missing arguments.
+        """
+        coro_args = list(inspect.signature(coro).parameters.keys())
+        if not coro_args:
+            raise ValueError(
+                "Required argument `message` missing " f"in the {coro.__name__}() cmd?"
+            )
+
+    def match(self, pattern: Union[str, Pattern], rate_limit: Optional[int] = None):
+        if isinstance(pattern, str):
+            pattern = re.compile(pattern)
+
+        def response(coro: Callable) -> Callable:
+            self.validate_args(coro)
+            self._match.append(
+                _Match(coro=coro, pattern=pattern, rate_limit=rate_limit)
+            )
+            return coro
+
+        return response
+
     def cmd(
         self,
         command: str,
@@ -211,14 +262,8 @@ class RocketChatBot:
         if args is None:
             args = []
 
-        def response(coro: Coroutine) -> Coroutine:
-            coro_args = list(inspect.signature(coro).parameters.keys())
-
-            if not coro_args:
-                raise ValueError(
-                    "Required argument `message` missing "
-                    f"in the {coro.__name__}() cmd?"
-                )
+        def response(coro: Callable) -> Callable:
+            self.validate_args(coro)
 
             if command in self._commands:
                 raise ValueError(f"Multiple handlers defined for {command}")
@@ -316,56 +361,79 @@ class RocketChatBot:
         try:
             msg = Message(data["fields"]["args"])
             if (
-                not msg.text.startswith(self.prefix)
-                or msg.username == self.username
+                msg.username == self.username
                 or msg.edited_at is not None
                 or msg.reactions
             ):
                 return
 
-            parser = self.get_argument_parser(msg.room_id)
+            for match in self._match:
+                if match.pattern.match(msg.text):
+                    if match.rate_limit is not None:
+                        if match.last_called is None:
+                            elapsed = float("inf")
+                        else:
+                            elapsed = time.monotonic() - match.last_called
 
-            async def send_enqueued_messages() -> int:
-                num_messages = 0
-                while True:
+                        remaining = match.rate_limit - elapsed
+
+                        if remaining > 0:
+                            self.logger.debug(f"rate limited, {remaining:.3f}s left")
+                            return
+
+                    match.last_called = time.monotonic()
                     try:
-                        message = parser.msg_q.get_nowait()
-                        num_messages += 1
-                    except queue.Empty:
-                        break
+                        response = await match.coro(msg)
+                    except Exception:
+                        self.logger.exception("failed to handle match")
                     else:
-                        await self.send_message(msg.room_id, f"```\n{message}```")
+                        if response is not None:
+                            await self.send_message(msg.room_id, response)
 
-                return num_messages
+            if msg.text.startswith(self.prefix):
+                parser = self.get_argument_parser(msg.room_id)
 
-            text = msg.text[len(self.prefix) :]
-            args = shlex.split(text)
-            command = args[0]
+                async def send_enqueued_messages() -> int:
+                    num_messages = 0
+                    while True:
+                        try:
+                            message = parser.msg_q.get_nowait()
+                            num_messages += 1
+                        except queue.Empty:
+                            break
+                        else:
+                            await self.send_message(msg.room_id, f"```\n{message}```")
 
-            if command == "help":
-                parser.print_help()
-                await send_enqueued_messages()
-                return
-            else:
-                try:
-                    msg.args = parser.parse_args(args)
-                except Exception as e:
-                    if not await send_enqueued_messages():
-                        await self.send_message(
-                            msg.room_id, str(e),
-                        )
+                    return num_messages
+
+                text = msg.text[len(self.prefix) :]
+                args = shlex.split(text)
+                command = args[0]
+
+                if command == "help":
+                    parser.print_help()
+                    await send_enqueued_messages()
                     return
                 else:
-                    await send_enqueued_messages()
+                    try:
+                        msg.args = parser.parse_args(args)
+                    except Exception as e:
+                        if not await send_enqueued_messages():
+                            await self.send_message(
+                                msg.room_id, str(e),
+                            )
+                        return
+                    else:
+                        await send_enqueued_messages()
 
-            coro = self._commands[command].coro
-            try:
-                response = await coro(msg)
-            except Exception:
-                self.logger.exception("failed to handle command")
-            else:
-                if response is not None:
-                    await self.send_message(msg.room_id, response)
+                coro = self._commands[command].coro
+                try:
+                    response = await coro(msg)
+                except Exception:
+                    self.logger.exception("failed to handle command")
+                else:
+                    if response is not None:
+                        await self.send_message(msg.room_id, response)
         except Exception:
             self.logger.exception("failed to handle message")
 
