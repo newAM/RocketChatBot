@@ -1,135 +1,176 @@
-#!/usr/bin/env python3.7
+#!/usr/bin/env python3.8
 
 import time
 import os
+import asyncio
 import random
 from typing import Optional
+from args import arg
 
-from rocketchatbot import RocketChatBot, ChatMessage
+from rocketchatbot import RocketChatBot
+from rocketchat_data import Message
 from owo import owo
 from random_excuse import random_excuse
+from util import get_file_by_name
 
 DIR = os.path.dirname(os.path.realpath(__file__))
 MEME_DIR = os.path.join(DIR, "memes")
-MEME_LIST = os.listdir(MEME_DIR)
-MEME_EXTS = (".png", ".gif", ".jpg")
-MEME_NAME_CHARS = "-_.abcdefghijklmnopqrstuvwxyz0123456789"
+MEME_EXTS = (".png", ".gif", ".jpg", ".jpeg")
+MEME_NAME_CHARS = "-_.abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 MEME_NAME_LEN = 64
 
 app = RocketChatBot()
+MEME_ROOMS = ["GENERAL"]
 
 
 @app.cmd("ping", help="pong")
-async def ping(message: ChatMessage) -> str:
+async def ping(message: Message) -> str:
     return "pong"
 
 
-@app.cmd("owo", args=["text"], help="translates text to owo")
-async def owo_handler(message: ChatMessage) -> str:
-    return owo(message.command_body)
+@app.cmd(
+    "timer",
+    args=[arg("duration", type=int, help="duration in seconds")],
+    help="set an egg timer",
+)
+async def timer(message: Message) -> str:
+    if message.args.duration > 600:
+        return "duration cannot be more than 600s"
+    elif message.args.duration < 0:
+        return "duration cannot be less than 0s"
+
+    await asyncio.sleep(message.args.duration)
+    return f"Your {message.args.duration}s timer is up @{str(message.user.name)}!"
+
+
+@app.cmd(
+    "spam", args=[arg("text", type=str, help="text to spam")], help="spams some text",
+)
+async def spam(message: Message) -> str:
+    coros = []
+    for _ in range(5):
+        coros.append(app.send_message(message.room_id, message.args.text))
+    asyncio.gather(*coros)
+
+
+@app.cmd("pong", help="ping")
+async def pong(message: Message) -> str:
+    return "ping"
+
+
+@app.cmd(
+    "owo",
+    args=[arg("text", type=str, help="text to translate")],
+    help="translates text to owo",
+)
+async def owo_handler(message: Message) -> str:
+    return owo(message.args.text)
 
 
 @app.cmd("uptime", help="display uptime")
-async def uptime(message: ChatMessage) -> str:
-    """ ``!uptime`` command. """
+async def uptime(message: Message) -> str:
     uptime = time.time() - app.start_time
     timestamp = time.strftime("%Hh %Mm %Ss", time.gmtime(uptime))
     return "Uptime: " + timestamp
 
 
-@app.cmd("do", args=["anything"], help="does anything")
-async def excuse(message: ChatMessage) -> str:
+@app.cmd("do", args=[arg("anything", help="thing to do")], help="does anything")
+async def excuse(message: Message) -> str:
     return random_excuse()
 
 
 @app.cmd("saymyname", help="says your name")
-async def saymyname(message: ChatMessage) -> str:
+async def saymyname(message: Message) -> str:
     return "@" + message.username
 
 
-@app.cmd("say", args=["text"], help="says some text")
-async def say(message: ChatMessage) -> str:
-    return message.command_body
+@app.cmd(
+    "say", args=[arg("text", type=str, help="text to say")], help="says some text",
+)
+async def say(message: Message) -> str:
+    return message.args.text
 
 
-@app.cmd("feedback", args=["text"], help="give feedback")
-async def feedback(message: ChatMessage) -> str:
+@app.cmd(
+    "feedback",
+    args=[arg("text", type=str, help="text to give as feedback")],
+    help="give feedback",
+)
+async def feedback(message: Message) -> str:
     timestamp = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime())
     feedback = ""
-    for line in message.command_body.splitlines():
-        feedback += f"[{timestamp}] [{str(message.username)}] "
+    for line in message.args.text.splitlines():
+        feedback += f"[{timestamp}] [{str(message.user.name)}] "
         feedback += line
         feedback += "\n"
     with open("feedback.txt", "a", newline="") as f:
         f.write(feedback)
 
-    return f"Thanks for the feedback @{str(message.username)}!"
-
-
-@app.cmd("help", help="display all commands")
-async def help(message: ChatMessage) -> str:
-    help_msg = "```\n"
-    for key, value in sorted(app.handlers.items()):
-        print(value)
-        help_msg += f"!{key} "
-        for arg in value.args:
-            help_msg += f"[{arg}] "
-        help_msg += f"- {value.help}\n"
-    help_msg += "```"
-    return help_msg
+    return f"Thanks for the feedback @{str(message.user.name)}!"
 
 
 @app.cmd("hcf", help="halt and catch fire")
-async def hcf(message: ChatMessage):
-    return f"@{str(message.username)} is not authorized for this function."
+async def hcf(message: Message):
+    return f"@{str(message.user.name)} is not authorized for this function."
 
 
-@app.cmd("listmemes", help="lists all memes")
-async def listmemes(message: ChatMessage) -> str:
+@app.cmd("listmemes", help="lists all memes", rooms=MEME_ROOMS)
+async def listmemes(message: Message) -> str:
     ret = "**Meme Menu**:\n```"
-    for meme in MEME_LIST:
+    for meme in os.listdir(MEME_DIR):
         ret += f"{str(meme)}\n"
     ret += "```"
     return ret
 
 
-@app.cmd("randmeme", help="lists all memes")
-async def randmeme(message: ChatMessage):
-    meme = os.path.join(MEME_DIR, random.choice(MEME_LIST))
+@app.cmd("randmeme", help="get a random meme", rooms=MEME_ROOMS)
+async def randmeme(message: Message):
+    meme = os.path.join(MEME_DIR, random.choice(os.listdir(MEME_DIR)))
     await app.upload_file(message.room_id, meme)
 
 
-@app.cmd("meme", args=["meme"], help="get a specific meme from listmemes")
-async def meme(message: ChatMessage) -> Optional[str]:
-    if message.command_body not in MEME_LIST:
-        return f"Invalid meme: `{str(message.command_body)}`"
+@app.cmd(
+    "meme",
+    args=[arg("meme", type=str, help="name of meme")],
+    help="get a specific meme from listmemes",
+    rooms=MEME_ROOMS,
+)
+async def meme(message: Message) -> Optional[str]:
+
+    meme = get_file_by_name(os.listdir(MEME_DIR), message.args.meme)
+    if meme is None:
+        return f"Invalid meme: `{str(message.args.meme)}`"
     else:
-        meme = os.path.join(MEME_DIR, message.command_body)
+        meme = os.path.join(MEME_DIR, meme)
         await app.upload_file(message.room_id, meme)
 
 
 @app.cmd(
     "newmeme",
     help="add a new meme (use this command in the description of a image)",
+    rooms=MEME_ROOMS,
 )
-async def newmeme(message: ChatMessage) -> Optional[str]:
-    if not message.has_image_attachment:
+async def newmeme(message: Message) -> Optional[str]:
+    if not message.attachments:
         return "no image attachment found"
 
-    if not message.attachment_title.endswith(MEME_EXTS):
+    num_attachments = len(message.attachments)
+    if num_attachments > 1:
+        return f"found {num_attachments} attachments, expected 1"
+
+    attachment = message.attachments[0]
+
+    if attachment.title.endswith(MEME_EXTS):
         return f"memes are only accepted in these formats: `{MEME_EXTS}`"
 
-    if len(message.attachment_title) > MEME_NAME_LEN:
+    if len(attachment.title) > MEME_NAME_LEN:
         return f"meme file name must be less than {MEME_NAME_LEN} chars long"
 
-    for char in message.attachment_title:
+    for char in attachment.title:
         if char not in MEME_NAME_CHARS:
-            return (
-                f"file name may only contain these characters: "
-                f"{MEME_NAME_CHARS}"
-            )
+            return f"file name may only contain these characters: {MEME_NAME_CHARS}"
 
-    if message.attachment_title in MEME_LIST:
+    if get_file_by_name(os.listdir(MEME_DIR), message.attachment_title) is not None:
         return "meme with the same name already exists"
 
     try:
@@ -142,13 +183,7 @@ async def newmeme(message: ChatMessage) -> Optional[str]:
         return f"Added `{message.attachment_title}` to the meme bank."
 
 
-# add rate limiting
-
 if __name__ == "__main__":
     app.run(
-        username="bot",
-        password="pass",
-        hostname="10.0.0.4",
-        port=3000,
-        ssl=False,
+        username="bot", password="12345", hostname="10.0.0.4", port=3000, ssl=False,
     )

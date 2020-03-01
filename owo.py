@@ -1,16 +1,25 @@
-word_replace = {"you": "yuw", "and": "awnd", "lol": "lawl"}
+import re
+
+
+OWO_REPLACE = {"you": "yuw", "and": "awnd", "lol": "lawl"}
+WHITESPACE_SPLIT = re.compile(r"(\s+)")
 
 
 def owo(text: str):
     """ Adapted from owotrans. """
-    words = text.split()
-    for i in range(0, len(words)):
-        word = words[i]
-        if word in word_replace:
-            words[i] = word_replace[word]
-            text = " ".join(words)
+    ret = ""
+    for word in WHITESPACE_SPLIT.split(text):
+        upper = word.isupper()
+        if word.lower() in OWO_REPLACE:
+            word = OWO_REPLACE[word.lower()]
+            if upper:
+                word = word.upper()
+        else:
+            word = word.replace("l", "w")
+            word = word.replace("L", "W")
+            word = word.replace("r", "w")
+            word = word.replace("R", "W")
 
-    text = text.replace("l", "w")
-    text = text.replace("r", "w")
+        ret += word
 
-    return text
+    return ret

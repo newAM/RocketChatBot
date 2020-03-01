@@ -86,11 +86,7 @@ EXCUSE_LIST = [
     "I'm still recovering from the game of thrones finale.",
 ]
 
-EXCUSE_NOUN = ["love", "like", "be honored"]
 
-
-def random_excuse():
+def random_excuse() -> str:
     excuse = random.choice(EXCUSE_LIST)
-    noun = random.choice(EXCUSE_NOUN)
-
-    return f"I would {noun} to but... {excuse}"
+    return f"I would like to but... {excuse}"
